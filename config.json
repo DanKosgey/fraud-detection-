@@ -1,4 +1,11 @@
 {
+    "data_source": {
+        "use_real_data": false,
+        "csv_file_path": "data/fraud_data.csv",
+        "csv_separator": ",",
+        "csv_encoding": "utf-8",
+        "data_has_header": true
+    },
     "data_processing": {
         "num_samples": 2000,
         "fraud_ratio": 0.2,
@@ -7,7 +14,7 @@
         "target_column": "fraud_Cases",
         "pca": {
             "enabled": true,
-            "n_components": 7,
+            "n_components": 6,
             "whiten": false,
             "svd_solver": "auto"
         },

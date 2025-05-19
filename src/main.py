@@ -26,6 +26,42 @@ def save_model(model, model_type, config):
         pickle.dump(model, f)
     print(f"Model saved to {model_path}")
 
+def load_data_from_csv(config):
+    """Load data from a CSV file specified in the config."""
+    data_source = config["data_source"]
+    file_path = data_source["csv_file_path"]
+    
+    if not os.path.exists(file_path):
+        print(f"ERROR: CSV file not found at {file_path}")
+        print("Please check the file path in your config file")
+        print("Defaulting to synthetic data...")
+        return None
+    
+    try:
+        print(f"Loading data from {file_path}...")
+        df = pd.read_csv(
+            file_path,
+            sep=data_source["csv_separator"],
+            encoding=data_source["csv_encoding"],
+            header=0 if data_source["data_has_header"] else None
+        )
+        
+        # Ensure target column exists
+        target_column = config["data_processing"]["target_column"]
+        if target_column not in df.columns:
+            print(f"ERROR: Target column '{target_column}' not found in CSV file")
+            print(f"Available columns: {', '.join(df.columns)}")
+            print("Defaulting to synthetic data...")
+            return None
+        
+        print(f"Successfully loaded {len(df)} records with {df.columns.size} columns")
+        return df
+        
+    except Exception as e:
+        print(f"ERROR loading CSV file: {e}")
+        print("Defaulting to synthetic data...")
+        return None
+
 def main(config_path="config.json", compare_structures=False):
     """Run the complete fraud detection pipeline using configuration file."""
     # Load configuration
@@ -46,13 +82,20 @@ def main(config_path="config.json", compare_structures=False):
     
     print("Starting fraud detection pipeline...\n")
     
-    # Generate synthetic data or load real data here
+    # Get data either from CSV or generate synthetic data
     print_banner("Data Preparation", "-")
-    print("Generating synthetic data...")
-    df = generate_synthetic_data(
-        num_samples=config["data_processing"]["num_samples"],
-        fraud_ratio=config["data_processing"]["fraud_ratio"]
-    )
+    
+    df = None
+    if config["data_source"]["use_real_data"]:
+        df = load_data_from_csv(config)
+    
+    # Fall back to synthetic data if loading failed or not configured
+    if df is None:
+        print("Generating synthetic data...")
+        df = generate_synthetic_data(
+            num_samples=config["data_processing"]["num_samples"],
+            fraud_ratio=config["data_processing"]["fraud_ratio"]
+        )
     
     # Process data using dynamic processor
     print("Processing data using dynamic processor...")

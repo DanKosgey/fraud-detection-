@@ -6,7 +6,8 @@ This project implements a fraud detection system for bank transactions using Bay
 
 ```
 saviour/
-├── data/               # Data storage directory
+├── config.json        # Configuration file for all parameters
+├── data/              # Data storage directory for CSV files
 ├── models/            # Trained model storage
 ├── notebooks/         # Jupyter notebooks for exploration
 ├── plots/             # Generated visualizations
@@ -14,23 +15,53 @@ saviour/
 │   ├── mle/           # Plots for Maximum Likelihood estimation
 ├── results/           # Model evaluation results
 ├── src/               # Source code
-│   ├── data_processing.py    # Data preparation and preprocessing
-│   ├── bayesian_model.py     # Bayesian Network model implementation
-│   ├── visualization.py      # Plotting and visualization functions
-│   ├── structure_learning.py # Network structure learning
-│   └── main.py               # Main execution script
+│   ├── data_processing.py        # Data preparation and preprocessing
+│   ├── dynamic_data_processor.py # Automatic data type detection and processing
+│   ├── bayesian_model.py         # Bayesian Network model implementation
+│   ├── visualization.py          # Plotting and visualization functions
+│   ├── structure_learning.py     # Network structure learning
+│   ├── test_model.py             # Model testing script
+│   └── main.py                   # Main execution script
 └── tests/             # Unit tests
 ```
 
 ## Key Features
 
-1. **Synthetic Data Generation**: Creates realistic fraud detection data with features that have varying relationships with fraud.
-2. **Data Preprocessing Pipeline**: Handles categorical encoding, scaling, and dimensionality reduction.
-3. **PCA Transformation**: Reduces dimensionality while preserving variance.
-4. **Bayesian Network Modeling**: Implements probabilistic graphical models for fraud classification.
-5. **Different Estimation Methods**: Compares Maximum Likelihood (MLE) and Bayesian estimation approaches.
-6. **Structure Learning**: Demonstrates the impact of network structure on model performance.
-7. **Visualization Suite**: Comprehensive visualization of model results.
+1. **Dynamic Data Processing**: Automatically detects and handles different data types.
+2. **Configuration-driven**: All parameters are controlled via a single config.json file.
+3. **Multiple Data Sources**: Can use either synthetic data or CSV files for training.
+4. **Synthetic Data Generation**: Creates realistic fraud detection data with features that have varying relationships with fraud.
+5. **Data Preprocessing Pipeline**: Handles categorical encoding, scaling, and dimensionality reduction.
+6. **PCA Transformation**: Reduces dimensionality while preserving variance.
+7. **Bayesian Network Modeling**: Implements probabilistic graphical models for fraud classification.
+8. **Different Estimation Methods**: Compares Maximum Likelihood (MLE) and Bayesian estimation approaches.
+9. **Structure Learning**: Demonstrates the impact of network structure on model performance.
+10. **Visualization Suite**: Comprehensive visualization of model results.
+
+## Configuration
+
+The project uses a `config.json` file to control all aspects of execution, including:
+
+- Data source (synthetic or CSV)
+- Data processing parameters
+- Model configuration
+- Output directories
+- Testing parameters
+
+To use your own CSV data:
+
+1. Place your CSV file in the `data/` directory
+2. Update the `data_source` section in the `config.json` file:
+   ```json
+   "data_source": {
+       "use_real_data": true,
+       "csv_file_path": "data/your_file.csv",
+       "csv_separator": ",",
+       "csv_encoding": "utf-8",
+       "data_has_header": true
+   }
+   ```
+3. Ensure your CSV file contains the target column as specified in the config (default: "fraud_Cases")
 
 ## MLE vs Bayesian Estimation
 
@@ -68,10 +99,22 @@ To run the complete pipeline:
 python src/main.py
 ```
 
+To run with a specific configuration file:
+
+```bash
+python src/main.py --config my_config.json
+```
+
 To run with structure comparison:
 
 ```bash
 python src/main.py --compare-structures
+```
+
+To test the trained model:
+
+```bash
+python src/test_model.py
 ```
 
 ## Results
@@ -79,6 +122,7 @@ python src/main.py --compare-structures
 The results are saved in the following directories:
 - `results/`: Detailed metrics in JSON format
 - `plots/`: Visualizations including ROC curves, confusion matrices, and network structures
+- `test_results/`: Test results with varying fraud ratios
 
 ## Requirements
 

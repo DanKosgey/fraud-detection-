@@ -43,22 +43,59 @@ def load_model(model_type='bayes', config_path='config.json'):
         print(f"Error loading model: {e}")
         return None
 
+def load_data_from_csv(config):
+    """Load data from a CSV file specified in the config."""
+    data_source = config["data_source"]
+    file_path = data_source["csv_file_path"]
+    
+    if not os.path.exists(file_path):
+        print(f"ERROR: CSV file not found at {file_path}")
+        return None
+    
+    try:
+        print(f"Loading test data from {file_path}...")
+        df = pd.read_csv(
+            file_path,
+            sep=data_source["csv_separator"],
+            encoding=data_source["csv_encoding"],
+            header=0 if data_source["data_has_header"] else None
+        )
+        
+        # Ensure target column exists
+        target_column = config["data_processing"]["target_column"]
+        if target_column not in df.columns:
+            print(f"ERROR: Target column '{target_column}' not found in CSV file")
+            return None
+        
+        print(f"Successfully loaded {len(df)} records for testing")
+        return df
+        
+    except Exception as e:
+        print(f"ERROR loading CSV file: {e}")
+        return None
+
 def generate_test_data(config_path='config.json'):
-    """Generate and preprocess new test data based on configuration."""
+    """Generate or load and preprocess test data based on configuration."""
     # Load configuration
     with open(config_path, 'r') as f:
         config = json.load(f)
     
-    test_config = config['testing']
-    data_config = config['data_processing']
+    df = None
+    if config["data_source"]["use_real_data"]:
+        df = load_data_from_csv(config)
     
-    num_samples = test_config.get('num_samples', 500)
-    fraud_ratio = data_config.get('fraud_ratio', 0.2)
-    
-    print(f"Generating {num_samples} test samples with {fraud_ratio*100}% fraud ratio...")
-    
-    # Generate new synthetic data
-    df = generate_synthetic_data(num_samples, fraud_ratio)
+    # Fall back to synthetic data if loading failed or not configured
+    if df is None:
+        test_config = config['testing']
+        data_config = config['data_processing']
+        
+        num_samples = test_config.get('num_samples', 500)
+        fraud_ratio = data_config.get('fraud_ratio', 0.2)
+        
+        print(f"Generating {num_samples} test samples with {fraud_ratio*100}% fraud ratio...")
+        
+        # Generate new synthetic data
+        df = generate_synthetic_data(num_samples, fraud_ratio)
     
     # Process using the dynamic processor
     processor = DynamicDataProcessor(config_path)
@@ -162,6 +199,11 @@ def vary_fraud_ratio_test(config_path='config.json', model_type='bayes'):
     
     model = load_model(model_type=model_type, config_path=config_path)
     if model is None:
+        return
+    
+    # Skip fraud ratio testing if using real data
+    if config["data_source"]["use_real_data"]:
+        print("\nSkipping fraud ratio testing when using real data.")
         return
     
     # Get fraud ratios from config
