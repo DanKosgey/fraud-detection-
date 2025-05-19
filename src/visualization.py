@@ -127,29 +127,42 @@ def plot_feature_importance(pca_explained_variance_ratio, title='PCA Components 
     plt.tight_layout()
     return plt.gcf()
 
-def save_all_plots(metrics, model, pca_explained_variance_ratio=None, output_dir='plots'):
+def save_all_plots(metrics, model, pca_explained_variance_ratio=None, output_dir='plots', plot_config=None):
     """Save all visualization plots to files."""
     import os
     os.makedirs(output_dir, exist_ok=True)
     
+    # Set default config if none provided
+    if plot_config is None:
+        plot_config = {
+            "generate_confusion_matrix": True,
+            "generate_roc_curve": True,
+            "generate_metrics_plot": True,
+            "generate_network_structure": True
+        }
+    
     # Plot and save confusion matrix
-    cm_fig = plot_confusion_matrix(metrics['confusion_matrix'])
-    cm_fig.savefig(os.path.join(output_dir, 'confusion_matrix.png'))
+    if plot_config.get("generate_confusion_matrix", True):
+        cm_fig = plot_confusion_matrix(metrics['confusion_matrix'])
+        cm_fig.savefig(os.path.join(output_dir, 'confusion_matrix.png'))
     
     # Plot and save ROC curve
-    roc_fig = plot_roc_curve(metrics['y_pred'], metrics['y_probs'])
-    roc_fig.savefig(os.path.join(output_dir, 'roc_curve.png'))
+    if plot_config.get("generate_roc_curve", True):
+        roc_fig = plot_roc_curve(metrics['y_pred'], metrics['y_probs'])
+        roc_fig.savefig(os.path.join(output_dir, 'roc_curve.png'))
     
     # Plot and save metrics comparison
-    metrics_fig = plot_metrics_comparison(metrics)
-    metrics_fig.savefig(os.path.join(output_dir, 'metrics_comparison.png'))
+    if plot_config.get("generate_metrics_plot", True):
+        metrics_fig = plot_metrics_comparison(metrics)
+        metrics_fig.savefig(os.path.join(output_dir, 'metrics_comparison.png'))
     
     # Plot and save network structure
-    network_fig = plot_network_structure(model)
-    network_fig.savefig(os.path.join(output_dir, 'network_structure.png'))
+    if plot_config.get("generate_network_structure", True):
+        network_fig = plot_network_structure(model)
+        network_fig.savefig(os.path.join(output_dir, 'network_structure.png'))
     
     # Plot and save PCA explained variance if provided
-    if pca_explained_variance_ratio is not None:
+    if pca_explained_variance_ratio is not None and plot_config.get("generate_pca_plot", True):
         pca_fig = plot_feature_importance(pca_explained_variance_ratio)
         pca_fig.savefig(os.path.join(output_dir, 'pca_explained_variance.png'))
     

@@ -1,5 +1,6 @@
 import os
 import json
+import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -8,12 +9,8 @@ from sklearn.metrics import (
     f1_score, roc_auc_score, confusion_matrix, roc_curve
 )
 
-from data_processing import (
-    generate_synthetic_data, 
-    preprocess_data, 
-    apply_pca, 
-    discretize_data
-)
+from data_processing import generate_synthetic_data
+from dynamic_data_processor import DynamicDataProcessor
 from bayesian_model import predict_probabilities
 from visualization import (
     plot_confusion_matrix, 
@@ -21,15 +18,20 @@ from visualization import (
     plot_metrics_comparison
 )
 
-def load_model(model_type='bayes'):
+def load_model(model_type='bayes', config_path='config.json'):
     """Load a trained model from file."""
     try:
         import pickle
-        model_path = f'models/{model_type}_model.pkl'
+        
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+            
+        model_dir = config['output']['directories']['models']
+        model_path = f'{model_dir}/{model_type}_model.pkl'
         
         if not os.path.exists(model_path):
             print(f"Model file {model_path} not found.")
-            print("Please run the main pipeline first: python src/main.py")
+            print(f"Please run the main pipeline first: python src/main.py --config {config_path}")
             return None
         
         with open(model_path, 'rb') as f:
@@ -41,44 +43,46 @@ def load_model(model_type='bayes'):
         print(f"Error loading model: {e}")
         return None
 
-def generate_test_data(num_samples=500, fraud_ratio=0.2, n_components=7):
-    """Generate and preprocess new test data."""
+def generate_test_data(config_path='config.json'):
+    """Generate and preprocess new test data based on configuration."""
+    # Load configuration
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    test_config = config['testing']
+    data_config = config['data_processing']
+    
+    num_samples = test_config.get('num_samples', 500)
+    fraud_ratio = data_config.get('fraud_ratio', 0.2)
+    
     print(f"Generating {num_samples} test samples with {fraud_ratio*100}% fraud ratio...")
     
     # Generate new synthetic data
     df = generate_synthetic_data(num_samples, fraud_ratio)
     
-    # Preprocess the data
-    df_preprocessed = preprocess_data(df)
+    # Process using the dynamic processor
+    processor = DynamicDataProcessor(config_path)
+    X, y = processor.process_pipeline(df, return_test_data=False)
     
-    # Apply PCA
-    df_pca = apply_pca(df_preprocessed, n_components)
-    
-    # Discretize PCA components for Bayesian Network
-    pca_columns = [f'PCA_{i+1}' for i in range(n_components)]
-    df_discretized = discretize_data(df_pca, pca_columns)
-    
-    # Split features and target
-    X_test = df_discretized.drop(columns=['fraud_Cases'])
-    y_test = df_discretized['fraud_Cases']
-    
-    print(f"Test data prepared with {X_test.shape[1]} features.")
-    return X_test, y_test
+    print(f"Test data prepared with {X.shape[1]} features.")
+    return X, y, processor
 
-def evaluate_on_test_data(model, X_test, y_test, model_type='bayes', threshold=0.5):
+def evaluate_on_test_data(model, X_test, y_test, config_path='config.json', model_type='bayes'):
     """Evaluate model performance on test data."""
     if model is None:
         return None
+    
+    # Load configuration
+    with open(config_path, 'r') as f:
+        config = json.load(f)
     
     print(f"Evaluating {model_type.upper()} model on test data...")
     
     # Get probability predictions
     y_probs = predict_probabilities(model, X_test)
     
-    # Use a more realistic threshold for Bayesian model
-    if model_type.lower() == 'bayes':
-        threshold = 0.65  # Higher threshold for better precision
-    
+    # Get threshold from config
+    threshold = config['bayesian_model']['prediction'][model_type]['threshold']
     y_pred = (y_probs >= threshold).astype(int)
     
     # Calculate metrics
@@ -96,13 +100,17 @@ def evaluate_on_test_data(model, X_test, y_test, model_type='bayes', threshold=0
     
     return metrics
 
-def display_and_save_results(metrics, model_type='bayes'):
+def display_and_save_results(metrics, model_type='bayes', config_path='config.json'):
     """Display and save evaluation results."""
     if metrics is None:
         return
     
+    # Load configuration
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
     # Create output directory
-    output_dir = 'test_results'
+    output_dir = config['output']['directories']['test_results']
     os.makedirs(output_dir, exist_ok=True)
     
     # Print metrics
@@ -121,40 +129,61 @@ def display_and_save_results(metrics, model_type='bayes'):
         json.dump(metrics_json, f, indent=4)
     
     # Generate and save plots
+    plot_config = config['output']['plots']
+    
     # Confusion matrix
-    cm_fig = plot_confusion_matrix(metrics['confusion_matrix'], 
-                                  title=f'{model_type.upper()} Model Confusion Matrix (Test Data)')
-    cm_fig.savefig(f'{output_dir}/{model_type}_test_confusion_matrix.png')
+    if plot_config.get('generate_confusion_matrix', True):
+        cm_fig = plot_confusion_matrix(metrics['confusion_matrix'], 
+                                      title=f'{model_type.upper()} Model Confusion Matrix (Test Data)')
+        cm_fig.savefig(f'{output_dir}/{model_type}_test_confusion_matrix.png')
     
     # ROC curve
-    roc_fig = plot_roc_curve(metrics['y_pred'], metrics['y_probs'],
-                            title=f'{model_type.upper()} Model ROC Curve (Test Data)')
-    roc_fig.savefig(f'{output_dir}/{model_type}_test_roc_curve.png')
+    if plot_config.get('generate_roc_curve', True):
+        roc_fig = plot_roc_curve(metrics['y_pred'], metrics['y_probs'],
+                                title=f'{model_type.upper()} Model ROC Curve (Test Data)')
+        roc_fig.savefig(f'{output_dir}/{model_type}_test_roc_curve.png')
     
     # Metrics comparison
-    metrics_fig = plot_metrics_comparison(
-        {k: metrics[k] for k in ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']},
-        title=f'{model_type.upper()} Model Metrics (Test Data)'
-    )
-    metrics_fig.savefig(f'{output_dir}/{model_type}_test_metrics.png')
+    if plot_config.get('generate_metrics_plot', True):
+        metrics_fig = plot_metrics_comparison(
+            {k: metrics[k] for k in ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']},
+            title=f'{model_type.upper()} Model Metrics (Test Data)'
+        )
+        metrics_fig.savefig(f'{output_dir}/{model_type}_test_metrics.png')
     
     plt.close('all')
     print(f"Results and plots saved to {output_dir}/")
 
-def vary_fraud_ratio_test():
-    """Test model performance across different fraud ratios."""
-    model = load_model(model_type='bayes')
+def vary_fraud_ratio_test(config_path='config.json', model_type='bayes'):
+    """Test model performance across different fraud ratios defined in config."""
+    # Load configuration
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    model = load_model(model_type=model_type, config_path=config_path)
     if model is None:
         return
     
-    fraud_ratios = [0.05, 0.1, 0.2, 0.3, 0.4]
+    # Get fraud ratios from config
+    fraud_ratios = config['testing']['fraud_ratios']
     results = {}
     
     print("\nTesting model performance across different fraud ratios...")
     for ratio in fraud_ratios:
         print(f"\nGenerating test data with {ratio*100}% fraud ratio...")
-        X_test, y_test = generate_test_data(num_samples=500, fraud_ratio=ratio)
-        metrics = evaluate_on_test_data(model, X_test, y_test)
+        
+        # Generate synthetic data with current fraud ratio
+        df = generate_synthetic_data(
+            num_samples=config['testing']['num_samples'],
+            fraud_ratio=ratio
+        )
+        
+        # Process using the dynamic processor
+        processor = DynamicDataProcessor(config_path)
+        X_test, y_test = processor.process_pipeline(df, return_test_data=False)
+        
+        # Evaluate model
+        metrics = evaluate_on_test_data(model, X_test, y_test, config_path=config_path, model_type=model_type)
         
         results[ratio] = {
             'accuracy': metrics['accuracy'],
@@ -165,7 +194,7 @@ def vary_fraud_ratio_test():
         }
     
     # Save results
-    output_dir = 'test_results'
+    output_dir = config['output']['directories']['test_results']
     os.makedirs(output_dir, exist_ok=True)
     
     with open(f'{output_dir}/fraud_ratio_comparison.json', 'w') as f:
@@ -191,28 +220,44 @@ def vary_fraud_ratio_test():
     
     print(f"Fraud ratio comparison results saved to {output_dir}/")
 
-def main():
+def main(config_path='config.json'):
     """Main function to test the model on new data."""
     print("Bank Fraud Detection - Model Testing")
     print("====================================")
     
+    # Load configuration
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    # Get model type from args or use default
+    model_type = 'bayes'  # Default model type
+    
     # Ensure model directory exists
-    if not os.path.exists('models'):
-        print("Models directory not found. Please run main.py first to train models.")
-        print("Run: python src/main.py")
+    model_dir = config['output']['directories']['models']
+    if not os.path.exists(model_dir):
+        print(f"Models directory '{model_dir}' not found. Please run main.py first to train models.")
+        print(f"Run: python src/main.py --config {config_path}")
         return
     
     # First test with default parameters
-    model = load_model(model_type='bayes')
+    model = load_model(model_type=model_type, config_path=config_path)
     if model:
-        X_test, y_test = generate_test_data()
-        metrics = evaluate_on_test_data(model, X_test, y_test)
-        display_and_save_results(metrics)
+        X_test, y_test, _ = generate_test_data(config_path=config_path)
+        metrics = evaluate_on_test_data(model, X_test, y_test, config_path=config_path, model_type=model_type)
+        display_and_save_results(metrics, model_type=model_type, config_path=config_path)
         
         # Test model across different fraud ratios
-        vary_fraud_ratio_test()
+        vary_fraud_ratio_test(config_path=config_path, model_type=model_type)
     
     print("\nTesting completed.")
 
 if __name__ == "__main__":
-    main() 
+    parser = argparse.ArgumentParser(description='Fraud Detection Model Testing')
+    parser.add_argument('--config', type=str, default='config.json',
+                        help='Path to configuration JSON file')
+    parser.add_argument('--model-type', type=str, default='bayes',
+                        choices=['mle', 'bayes'],
+                        help='Model type to test (default: bayes)')
+    
+    args = parser.parse_args()
+    main(config_path=args.config) 

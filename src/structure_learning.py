@@ -2,18 +2,27 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+import json
 from pgmpy.estimators import HillClimbSearch
 from pgmpy.estimators import BDeu, BIC
 from pgmpy.models import DiscreteBayesianNetwork
 from pgmpy.estimators import MaximumLikelihoodEstimator, BayesianEstimator
 from sklearn.model_selection import train_test_split
 
-from data_processing import prepare_data_pipeline
+from data_processing import generate_synthetic_data
+from dynamic_data_processor import DynamicDataProcessor
 from bayesian_model import train_model, evaluate_model
 from visualization import plot_network_structure
 
-def learn_network_structure(data, scoring_method='bdeu'):
+def learn_network_structure(data, config_path='config.json'):
     """Learn the Bayesian Network structure from data using Hill Climbing."""
+    # Load configuration
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    structure_config = config['structure_learning']
+    scoring_method = structure_config['scoring_method']
+    
     if scoring_method.lower() == 'bdeu':
         scoring_method = BDeu(data)
     elif scoring_method.lower() == 'bic':
@@ -28,8 +37,8 @@ def learn_network_structure(data, scoring_method='bdeu'):
     try:
         best_model = hc.estimate(
             scoring_method=scoring_method,
-            max_indegree=3,  # Limiting the number of parents for each node
-            max_iter=int(1e4)
+            max_indegree=structure_config['max_indegree'],
+            max_iter=structure_config['max_iter']
         )
         
         # Create the BN with learned edges
@@ -37,11 +46,12 @@ def learn_network_structure(data, scoring_method='bdeu'):
         print(f"Found {len(edges)} edges in learned model")
         
         # Make sure we have at least one edge to fraud_Cases if none were found
-        fraud_connected = any('fraud_Cases' in edge for edge in edges)
+        target_column = config['data_processing']['target_column']
+        fraud_connected = any(target_column in edge for edge in edges)
         if not fraud_connected:
-            print("Adding edge to fraud_Cases as none was found in learning")
+            print(f"Adding edge to {target_column} as none was found in learning")
             # Connect the first PCA component to fraud_Cases
-            edges.append(('PCA_1', 'fraud_Cases'))
+            edges.append(('PCA_1', target_column))
             
         # Create at least some differences from the manual model
         # by adding a few strategic connections
@@ -53,12 +63,15 @@ def learn_network_structure(data, scoring_method='bdeu'):
     except Exception as e:
         print(f"Error during structure learning: {e}")
         print("Using fallback structure")
+        
         # Fallback to a simple structure different from manual one
         edges = []
+        target_column = config['data_processing']['target_column']
+        
         for i in range(1, len(data.columns)):
-            # Connect all to fraud_Cases
+            # Connect all to target column
             if f'PCA_{i}' in data.columns:
-                edges.append((f'PCA_{i}', 'fraud_Cases'))
+                edges.append((f'PCA_{i}', target_column))
         
         # Add some unique connections
         if 'PCA_1' in data.columns and 'PCA_4' in data.columns:
@@ -69,8 +82,12 @@ def learn_network_structure(data, scoring_method='bdeu'):
     model = DiscreteBayesianNetwork(edges)
     return model
 
-def compare_structures(manual_model, learned_model, X_test, y_test):
+def compare_structures(manual_model, learned_model, X_test, y_test, config_path='config.json'):
     """Compare performance of two different Bayesian Network structures."""
+    # Load configuration
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
     # Evaluate manual structure
     manual_metrics = evaluate_model(manual_model, X_test, y_test)
     
@@ -98,17 +115,21 @@ def compare_structures(manual_model, learned_model, X_test, y_test):
     plot_network_structure(learned_model, title='Learned Network Structure')
     
     plt.tight_layout()
-    os.makedirs('plots', exist_ok=True)
-    plt.savefig('plots/structure_comparison.png')
+    plots_dir = config['output']['directories']['plots']
+    os.makedirs(plots_dir, exist_ok=True)
+    plt.savefig(f'{plots_dir}/structure_comparison.png')
     plt.close()
     
     # Save edges as text files for comparison
-    with open('results/manual_structure_edges.txt', 'w') as f:
+    results_dir = config['output']['directories']['results']
+    os.makedirs(results_dir, exist_ok=True)
+    
+    with open(f'{results_dir}/manual_structure_edges.txt', 'w') as f:
         f.write("Manual Structure Edges:\n")
         for edge in sorted(manual_model.edges()):
             f.write(f"{edge[0]} -> {edge[1]}\n")
     
-    with open('results/learned_structure_edges.txt', 'w') as f:
+    with open(f'{results_dir}/learned_structure_edges.txt', 'w') as f:
         f.write("Learned Structure Edges:\n")
         for edge in sorted(learned_model.edges()):
             f.write(f"{edge[0]} -> {edge[1]}\n")
@@ -118,36 +139,50 @@ def compare_structures(manual_model, learned_model, X_test, y_test):
         'learned': learned_metrics
     }
 
-def run_structure_comparison():
+def run_structure_comparison(config_path='config.json'):
     """Run a complete comparison of different network structures."""
     print("Starting network structure comparison...")
     
+    # Load configuration
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
     # Create output directories
-    os.makedirs('results', exist_ok=True)
-    os.makedirs('plots', exist_ok=True)
+    for directory in config['output']['directories'].values():
+        os.makedirs(directory, exist_ok=True)
     
     # Prepare data
     print("Preparing data...")
-    X_train, X_test, y_train, y_test = prepare_data_pipeline(
-        num_samples=2000,
-        fraud_ratio=0.2,
-        n_components=7
+    
+    # Generate synthetic data
+    df = generate_synthetic_data(
+        num_samples=config['data_processing']['num_samples'],
+        fraud_ratio=config['data_processing']['fraud_ratio']
     )
+    
+    # Process data using dynamic processor
+    data_processor = DynamicDataProcessor(config_path)
+    X_train, X_test, y_train, y_test = data_processor.process_pipeline(df)
     
     # Combine features and target for training
     train_data = X_train.copy()
     train_data['fraud_Cases'] = y_train
     
-    # Build and train manual model (from bayesian_model.py)
+    # Build and train manual model
     from bayesian_model import build_network_structure
     
     print("\nTraining model with manual structure...")
     manual_model = build_network_structure(n_components=len(X_train.columns))
-    manual_model = train_model(manual_model, train_data, estimator_type='bayes')
+    manual_model = train_model(
+        manual_model, 
+        train_data, 
+        estimator_type='bayes',
+        equivalent_sample_size=config['bayesian_model']['estimators']['bayes']['equivalent_sample_size']
+    )
     
     # Learn and train model with structure learning
     print("\nLearning network structure using Hill Climbing algorithm...")
-    learned_model = learn_network_structure(train_data, scoring_method='bdeu')
+    learned_model = learn_network_structure(train_data, config_path=config_path)
     print(f"Learned structure has {len(learned_model.edges())} edges")
     
     # Ensure the model includes all the nodes even if they're disconnected
@@ -156,14 +191,19 @@ def run_structure_comparison():
             print(f"Adding node {col} to learned model")
             learned_model.add_node(col)
             # Add a connection from this node to fraud_Cases to ensure its inclusion
-            learned_model.add_edge(col, 'fraud_Cases')
+            learned_model.add_edge(col, config['data_processing']['target_column'])
     
     print("\nTraining model with learned structure...")
     # Use slightly different parameters for learned model
-    learned_model = train_model(learned_model, train_data, estimator_type='bayes', equivalent_sample_size=5)
+    learned_model = train_model(
+        learned_model, 
+        train_data, 
+        estimator_type='bayes', 
+        equivalent_sample_size=config['bayesian_model']['estimators']['bayes']['equivalent_sample_size'] * 10
+    )
     
     # Compare models
-    results = compare_structures(manual_model, learned_model, X_test, y_test)
+    results = compare_structures(manual_model, learned_model, X_test, y_test, config_path=config_path)
     
     # Save results to JSON
     import json
@@ -176,14 +216,21 @@ def run_structure_comparison():
                    if k not in ['confusion_matrix', 'y_pred', 'y_probs']}
     }
     
-    with open('results/structure_comparison.json', 'w') as f:
+    with open(f"{config['output']['directories']['results']}/structure_comparison.json", 'w') as f:
         json.dump(results_json, f, indent=4)
     
     print("\nStructure comparison completed!")
-    print("Results have been saved to the 'results' directory")
-    print("Plots have been saved to 'plots/structure_comparison.png'")
+    print(f"Results have been saved to the '{config['output']['directories']['results']}' directory")
+    print(f"Plots have been saved to '{config['output']['directories']['plots']}/structure_comparison.png'")
     
     return results
 
 if __name__ == "__main__":
-    run_structure_comparison() 
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Structure Learning for Bayesian Networks')
+    parser.add_argument('--config', type=str, default='config.json',
+                        help='Path to configuration JSON file')
+    
+    args = parser.parse_args()
+    run_structure_comparison(config_path=args.config) 

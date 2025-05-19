@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import json
 from pgmpy.models import DiscreteBayesianNetwork
 from pgmpy.estimators import MaximumLikelihoodEstimator, BayesianEstimator
 from pgmpy.inference import VariableElimination
@@ -8,8 +9,23 @@ from sklearn.metrics import (
     f1_score, roc_auc_score, confusion_matrix
 )
 
-def build_network_structure(n_components=7):
+def build_network_structure(n_components=7, config_path='config.json'):
     """Build the Bayesian Network structure with complex relationships."""
+    # Load configuration if needed
+    if config_path:
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                if config["bayesian_model"]["structure"]["use_predefined"]:
+                    return build_predefined_structure(n_components)
+        except (FileNotFoundError, KeyError):
+            # Fallback to predefined structure
+            pass
+    
+    return build_predefined_structure(n_components)
+
+def build_predefined_structure(n_components=7):
+    """Build a predefined Bayesian Network structure."""
     # Create a more complex network structure than just direct connections to fraud_Cases
     edges = []
     
@@ -48,25 +64,18 @@ def train_model(model, data, estimator_type='mle', **kwargs):
         # Maximum Likelihood does not use priors - just frequency counting
         model.fit(data, estimator=MaximumLikelihoodEstimator)
     elif estimator_type.lower() == 'bayes':
-        # Bayesian estimator with strong prior to ensure difference from MLE
-        # Lower value = stronger prior influence leading to more smoothing of probabilities
+        # Bayesian estimator parameters
         equivalent_sample_size = kwargs.get('equivalent_sample_size', 1.0)
+        prior_type = kwargs.get('prior_type', 'BDeu')
         
-        # For demonstration purposes, introduce artificial behavior difference
-        # by adding a small pseudocount that favors predicting fraud slightly more
-        # This will make the Bayesian estimator yield different results from MLE
-        pseudocount = kwargs.get('pseudocount', 2)
-        
-        print(f"Using Bayesian estimation with equivalent_sample_size={equivalent_sample_size}")
+        print(f"Using Bayesian estimation with equivalent_sample_size={equivalent_sample_size}, prior_type={prior_type}")
         model.fit(
             data,
             estimator=BayesianEstimator,
-            prior_type='BDeu',  # Bayesian Dirichlet equivalent uniform prior
+            prior_type=prior_type,
             equivalent_sample_size=equivalent_sample_size  
         )
         
-        # Store the estimator type in the model for later use in prediction
-        model.estimator_type = estimator_type
     else:
         raise ValueError("Estimator type must be either 'mle' or 'bayes'")
     
@@ -114,17 +123,27 @@ def predict_probabilities(model, test_data):
     
     return np.array(pred_probs)
 
-def evaluate_model(model, X_test, y_test, threshold=0.5):
+def evaluate_model(model, X_test, y_test, threshold=None, config_path=None):
     """Evaluate the model's performance."""
     # Get probability predictions
     y_probs = predict_probabilities(model, X_test)
     
-    # Adjust threshold based on estimator type
+    # Get the estimator type
     estimator_type = getattr(model, 'estimator_type', 'mle')
-    if estimator_type.lower() == 'bayes':
-        # Use a higher threshold for more precision (fewer false positives)
-        # This makes the model more realistic by not catching every single fraud case
-        threshold = 0.65
+    
+    # Set threshold based on configuration or estimator type
+    if threshold is None:
+        if config_path:
+            try:
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    threshold = config["bayesian_model"]["prediction"][estimator_type.lower()]["threshold"]
+            except (FileNotFoundError, KeyError):
+                # Fallback thresholds
+                threshold = 0.65 if estimator_type.lower() == 'bayes' else 0.5
+        else:
+            # Default thresholds if no config provided
+            threshold = 0.65 if estimator_type.lower() == 'bayes' else 0.5
     
     y_pred = (y_probs >= threshold).astype(int)
     
@@ -146,17 +165,17 @@ def evaluate_model(model, X_test, y_test, threshold=0.5):
     
     return metrics
 
-def train_and_evaluate(X_train, X_test, y_train, y_test, estimator_type='mle', **kwargs):
+def train_and_evaluate(X_train, X_test, y_train, y_test, estimator_type='mle', threshold=None, config_path='config.json', **kwargs):
     """Complete pipeline for training and evaluating the Bayesian Network model."""
     # Combine features and target for training
     train_data = X_train.copy()
     train_data['fraud_Cases'] = y_train
     
     # Build and train model
-    model = build_network_structure(n_components=len(X_train.columns))
+    model = build_network_structure(n_components=len(X_train.columns), config_path=config_path)
     model = train_model(model, train_data, estimator_type, **kwargs)
     
     # Evaluate model
-    metrics = evaluate_model(model, X_test, y_test)
+    metrics = evaluate_model(model, X_test, y_test, threshold=threshold, config_path=config_path)
     
     return model, metrics 

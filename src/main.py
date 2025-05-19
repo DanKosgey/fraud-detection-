@@ -3,7 +3,9 @@ import json
 import argparse
 import numpy as np
 import pickle
-from data_processing import prepare_data_pipeline
+import pandas as pd
+from dynamic_data_processor import DynamicDataProcessor
+from data_processing import generate_synthetic_data
 from bayesian_model import train_and_evaluate
 from visualization import save_all_plots
 
@@ -14,173 +16,206 @@ def print_banner(text, char='='):
     print(f"{char * 2} {text} {char * 2}")
     print(char * width)
 
-def save_model(model, model_type):
+def save_model(model, model_type, config):
     """Save a model to disk using pickle."""
-    model_path = f'models/{model_type}_model.pkl'
+    output_dir = config["output"]["directories"]["models"]
+    os.makedirs(output_dir, exist_ok=True)
+    
+    model_path = f'{output_dir}/{model_type}_model.pkl'
     with open(model_path, 'wb') as f:
         pickle.dump(model, f)
     print(f"Model saved to {model_path}")
 
-def main(compare_structures=False):
-    """Run the complete fraud detection pipeline."""
+def main(config_path="config.json", compare_structures=False):
+    """Run the complete fraud detection pipeline using configuration file."""
+    # Load configuration
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
     # Create output directories
     print_banner("Fraud Detection with Bayesian Networks")
     print("\nInitializing pipeline...")
     
-    os.makedirs('models', exist_ok=True)
-    os.makedirs('results', exist_ok=True)
-    os.makedirs('plots', exist_ok=True)
-    os.makedirs('plots/mle', exist_ok=True)
-    os.makedirs('plots/bayes', exist_ok=True)
-
+    for directory in config["output"]["directories"].values():
+        os.makedirs(directory, exist_ok=True)
+    
+    # Create subdirectories for different estimator plots
+    for estimator in config["bayesian_model"]["estimators"]:
+        if config["bayesian_model"]["estimators"][estimator]["enabled"]:
+            os.makedirs(f"{config['output']['directories']['plots']}/{estimator}", exist_ok=True)
+    
     print("Starting fraud detection pipeline...\n")
     
-    # Prepare data
+    # Generate synthetic data or load real data here
     print_banner("Data Preparation", "-")
     print("Generating synthetic data...")
-    print("Preprocessing, applying PCA, and discretizing data...")
-    X_train, X_test, y_train, y_test = prepare_data_pipeline(
-        num_samples=2000,
-        fraud_ratio=0.2,
-        n_components=7
+    df = generate_synthetic_data(
+        num_samples=config["data_processing"]["num_samples"],
+        fraud_ratio=config["data_processing"]["fraud_ratio"]
     )
+    
+    # Process data using dynamic processor
+    print("Processing data using dynamic processor...")
+    data_processor = DynamicDataProcessor(config_path)
+    X_train, X_test, y_train, y_test = data_processor.process_pipeline(df)
+    
     print(f"Prepared training set with {len(X_train)} samples and {X_train.columns.size} features")
     print(f"Prepared test set with {len(X_test)} samples")
     
     # Train and evaluate models with different estimators
     print_banner("Model Training and Evaluation", "-")
-    print("\nComparing Maximum Likelihood Estimation (MLE) vs Bayesian Estimation:")
-    print("- MLE: Uses frequency counting without prior beliefs")
-    print("- Bayesian: Incorporates prior beliefs to regularize parameter estimates")
+    print("\nComparing estimation methods:")
     
-    # For educational purposes, we'll demonstrate the theoretical differences
-    # between MLE and Bayesian estimation by creating distinct results
+    # Store results for all enabled estimators
+    models = {}
+    all_metrics = {}
     
-    # Train MLE model
-    print("\nTraining model with MLE estimator...")
-    mle_model, mle_metrics = train_and_evaluate(
-        X_train, X_test, y_train, y_test,
-        estimator_type='mle'
-    )
-    # Save MLE model
-    save_model(mle_model, 'mle')
+    # Train MLE model if enabled
+    if config["bayesian_model"]["estimators"]["mle"]["enabled"]:
+        print("\nTraining model with MLE estimator...")
+        mle_model, mle_metrics = train_and_evaluate(
+            X_train, X_test, y_train, y_test,
+            estimator_type='mle',
+            threshold=config["bayesian_model"]["prediction"]["mle"]["threshold"]
+        )
+        
+        # Save model if enabled in config
+        if config["output"]["save_models"]:
+            save_model(mle_model, 'mle', config)
+        
+        # Store model and metrics
+        models['mle'] = mle_model
+        all_metrics['mle'] = mle_metrics
     
-    # For Bayesian model, we'll modify the metrics to show differences
-    print("\nTraining model with BAYES estimator...")
-    print("Using Bayesian estimation with equivalent_sample_size=0.5")
+    # Train Bayesian model if enabled
+    if config["bayesian_model"]["estimators"]["bayes"]["enabled"]:
+        print("\nTraining model with BAYES estimator...")
+        bayes_config = config["bayesian_model"]["estimators"]["bayes"]
+        print(f"Using Bayesian estimation with equivalent_sample_size={bayes_config['equivalent_sample_size']}")
+        
+        bayes_model, bayes_metrics = train_and_evaluate(
+            X_train, X_test, y_train, y_test,
+            estimator_type='bayes',
+            equivalent_sample_size=bayes_config['equivalent_sample_size'],
+            prior_type=bayes_config['prior_type'],
+            threshold=config["bayesian_model"]["prediction"]["bayes"]["threshold"]
+        )
+        
+        # Save model if enabled in config
+        if config["output"]["save_models"]:
+            save_model(bayes_model, 'bayes', config)
+        
+        # Store model and metrics
+        models['bayes'] = bayes_model
+        all_metrics['bayes'] = bayes_metrics
     
-    # Start with a copy of MLE metrics (since our implementation gives similar results)
-    bayes_metrics = mle_metrics.copy()
-    
-    # Now modify the Bayesian metrics to demonstrate realistic differences:
-    # - Bayesian tends to have better precision but lower recall
-    # - Bayesian is more robust to overfitting with more balanced metrics
-    # - These changes simulate what would happen with a larger, more complex dataset
-    bayes_metrics['precision'] = min(1.0, mle_metrics['precision'] * 1.25)  # Higher precision 
-    bayes_metrics['recall'] = max(0.65, mle_metrics['recall'] * 0.75)  # Lower recall - more realistic
-    bayes_metrics['accuracy'] = min(1.0, mle_metrics['accuracy'] * 1.05)  # Slightly better accuracy
-    bayes_metrics['f1'] = 2 * (bayes_metrics['precision'] * bayes_metrics['recall']) / (bayes_metrics['precision'] + bayes_metrics['recall'])
-    bayes_metrics['roc_auc'] = min(1.0, mle_metrics['roc_auc'] * 1.03)  # Slightly better AUC
-    
-    # Adjust confusion matrix to match the new metrics
-    tn, fp, fn, tp = mle_metrics['confusion_matrix'].ravel()
-    # Decrease true positives (lower recall) but increase true negatives (higher specificity)
-    tp_bayes = int(tp * bayes_metrics['recall'] / mle_metrics['recall'])
-    tn_bayes = int(tn * 1.15)  # Bayesian better at identifying negatives
-    fp_bayes = max(1, int(tp_bayes / bayes_metrics['precision'] - tp_bayes))  # Fewer false positives
-    fn_bayes = len(y_test) - tp_bayes - fp_bayes - tn_bayes
-    
-    # Ensure non-negative values
-    fn_bayes = max(0, fn_bayes)
-    fp_bayes = max(0, fp_bayes)
-    
-    bayes_metrics['confusion_matrix'] = np.array([[tn_bayes, fp_bayes], [fn_bayes, tp_bayes]])
-    
-    # Store results for both estimators
-    estimators = ['mle', 'bayes']
+    # Store results for comparison
     results = {
-        'mle': {k: mle_metrics[k] for k in ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']},
-        'bayes': {k: bayes_metrics[k] for k in ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']}
+        estimator: {k: metrics[k] for k in ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']}
+        for estimator, metrics in all_metrics.items()
     }
     
-    # Convert numpy arrays to lists for JSON serialization and save
-    for estimator, metrics in zip(estimators, [mle_metrics, bayes_metrics]):
+    # Save metrics and generate plots for each estimator
+    for estimator, metrics in all_metrics.items():
+        # Convert numpy arrays to lists for JSON serialization
         metrics_json = {
             k: v.tolist() if hasattr(v, 'tolist') else v
             for k, v in metrics.items()
         }
         
-        # Save detailed metrics to JSON
-        with open(f'results/{estimator}_metrics.json', 'w') as f:
-            json.dump(metrics_json, f, indent=4)
+        # Save detailed metrics to JSON if enabled
+        if config["output"]["save_metrics"]:
+            with open(f"{config['output']['directories']['results']}/{estimator}_metrics.json", 'w') as f:
+                json.dump(metrics_json, f, indent=4)
         
-        # Generate and save plots
+        # Generate and save plots if enabled
         print(f"Generating plots for {estimator.upper()} estimator...")
-        
-        # For Bayesian, we pass the MLE model but with modified metrics to show differences
-        if estimator == 'bayes':
-            save_all_plots(
-                bayes_metrics,
-                mle_model,  # Use the same model but different metrics
-                output_dir=f'plots/{estimator}'
-            )
-            # Save the Bayesian model (we're using MLE model with modifications)
-            save_model(mle_model, 'bayes')
-        else:
+        if config["output"]["plots"]["generate_confusion_matrix"] or \
+           config["output"]["plots"]["generate_roc_curve"] or \
+           config["output"]["plots"]["generate_metrics_plot"] or \
+           config["output"]["plots"]["generate_network_structure"]:
+            
             save_all_plots(
                 metrics,
-                mle_model,
-                output_dir=f'plots/{estimator}'
+                models[estimator],
+                pca_explained_variance_ratio=data_processor.get_pca_stats()['explained_variance_ratio'] if data_processor.get_pca_stats() else None,
+                output_dir=f"{config['output']['directories']['plots']}/{estimator}",
+                plot_config=config["output"]["plots"]
             )
     
-    # Print comparison of results
-    print_banner("Results Comparison", "-")
-    print("\nPerformance Metrics Comparison:")
-    print("\n{:<10} {:<10} {:<10} {:<10}".format("Metric", "MLE", "Bayesian", "Difference"))
-    print("-" * 42)
-    
-    for metric in ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']:
-        mle_val = results['mle'][metric]
-        bayes_val = results['bayes'][metric]
-        diff = bayes_val - mle_val
-        diff_str = f"{diff:+.4f}"
-        print("{:<10} {:<10.4f} {:<10.4f} {:<10}".format(metric, mle_val, bayes_val, diff_str))
-    
-    # Save comparison as JSON
-    comparison_results = {
-        'mle': results['mle'],
-        'bayes': results['bayes'],
-        'differences': {
-            metric: float(results['bayes'][metric] - results['mle'][metric])
-            for metric in ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
-        }
-    }
-    
-    with open('results/estimation_methods_comparison.json', 'w') as f:
-        json.dump(comparison_results, f, indent=4)
+    # Print comparison of results if we have multiple estimators
+    if len(results) > 1:
+        print_banner("Results Comparison", "-")
+        print("\nPerformance Metrics Comparison:")
+        
+        # Get list of estimators and metrics
+        estimators = list(results.keys())
+        metrics_list = ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
+        
+        # Print header
+        header = "{:<10}".format("Metric")
+        for estimator in estimators:
+            header += " {:<10}".format(estimator.upper())
+        if len(estimators) > 1:
+            header += " {:<10}".format("Difference")
+        print("\n" + header)
+        print("-" * (12 + 12 * len(estimators)))
+        
+        # Print metrics for each estimator
+        for metric in metrics_list:
+            line = "{:<10}".format(metric)
+            for estimator in estimators:
+                line += " {:<10.4f}".format(results[estimator][metric])
+            
+            # Add difference between estimators if we have exactly 2
+            if len(estimators) == 2:
+                diff = results[estimators[1]][metric] - results[estimators[0]][metric]
+                line += " {:<10}".format(f"{diff:+.4f}")
+            
+            print(line)
+        
+        # Save comparison as JSON if enabled
+        if config["output"]["save_metrics"] and len(estimators) == 2:
+            comparison_results = {
+                estimators[0]: results[estimators[0]],
+                estimators[1]: results[estimators[1]],
+                'differences': {
+                    metric: float(results[estimators[1]][metric] - results[estimators[0]][metric])
+                    for metric in metrics_list
+                }
+            }
+            
+            with open(f"{config['output']['directories']['results']}/estimation_methods_comparison.json", 'w') as f:
+                json.dump(comparison_results, f, indent=4)
     
     print("\nKey Observations:")
-    print("- Bayesian estimation shows better overall accuracy")
-    print("- Bayesian estimation demonstrates significantly better precision")
-    print("- MLE shows slightly better recall")
-    print("- Bayesian estimation generally provides more robust models less prone to overfitting")
-    print("- MLE may capture more of the training data patterns but can be less generalizable")
+    if 'bayes' in results and 'mle' in results:
+        if results['bayes']['accuracy'] > results['mle']['accuracy']:
+            print("- Bayesian estimation shows better overall accuracy")
+        if results['bayes']['precision'] > results['mle']['precision']:
+            print("- Bayesian estimation demonstrates better precision")
+        if results['mle']['recall'] > results['bayes']['recall']:
+            print("- MLE shows better recall")
+        print("- Bayesian estimation generally provides more robust models less prone to overfitting")
+        print("- MLE may capture more of the training data patterns but can be less generalizable")
     
     print("\nPipeline completed successfully!")
-    print("Results have been saved to the 'results' directory")
-    print("Plots have been saved to the 'plots' directory")
+    print(f"Results have been saved to the '{config['output']['directories']['results']}' directory")
+    print(f"Plots have been saved to the '{config['output']['directories']['plots']}' directory")
     
     # Run structure comparison if requested
-    if compare_structures:
+    if compare_structures and config["bayesian_model"]["structure"]["learn_from_data"]:
         print_banner("Network Structure Comparison", "-")
         print("\nComparing manually-defined structure vs. learned structure...")
         from structure_learning import run_structure_comparison
-        run_structure_comparison()
+        run_structure_comparison(config_path)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Fraud Detection with Bayesian Networks')
+    parser.add_argument('--config', type=str, default='config.json',
+                        help='Path to configuration JSON file')
     parser.add_argument('--compare-structures', action='store_true', 
                         help='Run structure comparison after main pipeline')
     
     args = parser.parse_args()
-    main(compare_structures=args.compare_structures) 
+    main(config_path=args.config, compare_structures=args.compare_structures) 
